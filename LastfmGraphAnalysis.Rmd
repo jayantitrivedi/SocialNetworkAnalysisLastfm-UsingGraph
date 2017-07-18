@@ -1,0 +1,127 @@
+---
+title: "Social network analysis of lastfm data using graph"
+author: "JAYANTI TRIVEDI"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: pdf_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(purrr)
+  library(tidyr)
+  library(readr)
+  library(igraph)
+  library(ggplot2)
+  library(dplyr)
+})
+
+set.seed(123456)
+```
+
+# Social network analysis of lastfm data using graph
+
+## Loads the CSV file with a subset of last.fm social network into an igraph object
+
+## Pre-processes and manipulates data to bring it into analyzable structure
+
+```{r}
+# Function for fixing ages (it is real data -- sometimes the age is messed up)
+limit_age_ <- function(x) ifelse(x>10 & x<80, x, NA)
+
+# Load edge list dataset
+# For col_types I specify character type for both net_user and net_friend
+# since they are not used as numbers, they are used as IDs -- character strings
+edge_df <- read_csv("lastfm.csv.gz",
+                    col_types = "ccdcccdc") %>%
+  mutate(age = limit_age_(age),
+         friend_age  = limit_age_(friend_age))
+
+# Display
+options(dplyr.width = Inf) # Display all columns
+head(edge_df)
+
+# Compute vertex attribute data.frame
+v_attr_df <- edge_df %>% 
+  select(net_user,age,gender,country) %>%
+  # combine net_user demographics and net_friend demographics
+  # into one long table
+  dplyr::union(
+    edge_df %>% 
+      select(net_friend,friend_age,friend_gender,friend_country) %>%
+      rename(net_user = net_friend,
+             age = friend_age,
+             gender = friend_gender,
+             country = friend_country)
+  ) %>%
+  group_by(net_user) %>%
+  # summarise each of the variables by net user
+  # duplicates resolved by MAX() for all variables
+  summarise_each_(
+    funs = funs(max),
+    vars = c("age","gender","country")) %>%
+  mutate(gender = factor(gender),
+         country = factor(country))
+
+# Display vertex attributes
+summary(v_attr_df)
+
+# Import into igraph object
+g1 <- graph_from_data_frame(
+    # all edges
+    d = edge_df %>% select(net_user,net_friend),
+    # all computed vertex attribute
+    vertices = v_attr_df
+  ) %>%
+  # collapse convert directed to non-directed
+  as.undirected(mode = "collapse")
+```
+
+## Top 5 countries of friends
+
+```{r}
+TopN <- 5L
+
+friends_country <- V(g1)[unique(edge_df$net_friend)]$country
+
+q2 <- tail(names(sort(table(friends_country))), TopN)
+
+q2
+```
+
+
+## Plots friendships between top 5 countries rather than between users
+### Thickness of edges represents friendships
+### Edge labels represent total number of friendships, like if country A has 54,000 friends with country B then edge labels display 54
+
+```{r}
+friend_df = filter(v_attr_df, net_user %in% edge_df$net_friend)
+
+final_friend_df = inner_join(edge_df, friend_df, 
+                             by = c("net_friend" = "net_user"))
+
+ego_df = filter(v_attr_df, net_user %in% edge_df$net_user)
+
+final_df <- inner_join(final_friend_df, ego_df, by = "net_user")
+
+all5 <- final_df %>% 
+  filter(country %in% q2 & country.y %in% q2) %>% 
+  select(country,country.y)
+
+all5$friendship = 1
+
+all5_df <- all5 %>% 
+  group_by(country,country.y) %>% 
+  summarise(friendship=sum(friendship))
+
+gg <- graph_from_data_frame(all5_df, directed = TRUE)
+E(gg)$weight <- E(gg)$friendship
+
+g3 <- as.undirected(gg, mode = "collapse")
+
+V(g3)$name <- c("BR","PO","RU","UK","US")
+V(g3)$size <- 30L
+E(g3)$curved <- TRUE
+plot(g3, edge.label = round(E(g3)$weight/1000,1), 
+     edge.width = E(g3)$weight/5600,
+     edge.curved=0.2)
+```
